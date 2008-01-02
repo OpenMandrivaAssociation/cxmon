@@ -13,6 +13,7 @@ URL:		http://cxmon.cebix.net/
 Source0:	%{name}-%{version}%{?cvsdate:-%{cvsdate}}.tar.bz2
 Patch0:		cxmon-3.0-includes.patch
 Patch1:		cxmon-3.1-pef-decoder.patch
+BuildRoot:	%{_tmppath}/%{name}-%{version}-buildroot
 BuildRequires:	readline-devel, ncurses-devel
 
 %description
