@@ -1,7 +1,6 @@
 %define name	cxmon
-%define version	3.1
-%define release	%mkrel 3
-%define cvsdate	20060313
+%define version	3.2
+%define release	%mkrel 1
 
 Summary:	Command-line file manipulation tool and disassembler
 Name:		%{name}
@@ -10,7 +9,7 @@ Release:	%{release}
 License:	GPL
 Group:		Development/Other
 URL:		http://cxmon.cebix.net/
-Source0:	%{name}-%{version}%{?cvsdate:-%{cvsdate}}.tar.bz2
+Source0:	http://cxmon.cebix.net/downloads/%name-%version.tar.gz
 Patch0:		cxmon-3.0-includes.patch
 Patch1:		cxmon-3.1-pef-decoder.patch
 BuildRoot:	%{_tmppath}/%{name}-%{version}-buildroot
@@ -30,7 +29,7 @@ support for disassembling MacOS code (LowMem globals, named A-Traps).
 %patch1 -p1 -b .pef-decoder
 
 %build
-%configure
+%configure2_5x
 %make
 
 %install
