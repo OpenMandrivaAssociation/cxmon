@@ -10,8 +10,9 @@ License:	GPL
 Group:		Development/Other
 URL:		http://cxmon.cebix.net/
 Source0:	http://cxmon.cebix.net/downloads/%name-%version.tar.gz
-Patch0:		cxmon-3.0-includes.patch
+Patch0:		cxmon-3.2-includes.patch
 Patch1:		cxmon-3.1-pef-decoder.patch
+Patch2:		cxmon-3.2-fix-str-fmt.patch
 BuildRoot:	%{_tmppath}/%{name}-%{version}-buildroot
 BuildRequires:	readline-devel, ncurses-devel
 
@@ -27,6 +28,7 @@ support for disassembling MacOS code (LowMem globals, named A-Traps).
 %setup -q
 %patch0 -p1 -b .includes
 %patch1 -p1 -b .pef-decoder
+%patch2 -p0 -b .str
 
 %build
 %configure2_5x
@@ -34,7 +36,7 @@ support for disassembling MacOS code (LowMem globals, named A-Traps).
 
 %install
 rm -rf $RPM_BUILD_ROOT
-make DESTDIR=$RPM_BUILD_ROOT install-strip
+%makeinstall_std
 
 %clean
 rm -rf $RPM_BUILD_ROOT
