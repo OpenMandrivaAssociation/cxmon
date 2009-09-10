@@ -1,6 +1,6 @@
 %define name	cxmon
 %define version	3.2
-%define release	%mkrel 2
+%define release	%mkrel 3
 
 Summary:	Command-line file manipulation tool and disassembler
 Name:		%{name}
