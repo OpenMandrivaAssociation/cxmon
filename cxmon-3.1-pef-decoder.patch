@@ -1,0 +1,1225 @@
+2006-03-13  Gwenole Beauchesne  <gb.public@free.fr>
+
+	* 64-bit fixes, cleanups, adjust main/init/term function offsets.
+
+2006-03-12  Gwenole Beauchesne  <gb.public@free.fr>
+
+	* Add PEF decoder.
+
+--- cxmon-3.1/src/Makefile.am.pef-decoder	2002-01-19 02:55:22.000000000 +0100
++++ cxmon-3.1/src/Makefile.am	2006-03-13 03:05:23.000000000 +0100
+@@ -5,6 +5,6 @@ SUBDIRS = disass
+ bin_PROGRAMS = cxmon
+ cxmon_SOURCES = main.cpp mon.cpp mon.h mon_6502.cpp mon_z80.cpp mon_atraps.h \
+   mon_cmd.cpp mon_cmd.h mon_disass.cpp mon_disass.h mon_lowmem.cpp mon_lowmem.h \
+-  mon_ppc.cpp sysdeps.h
++  mon_ppc.cpp sysdeps.h mon_pef.cpp
+ 
+ cxmon_LDADD = disass/libdisass.a
+--- cxmon-3.1/src/Makefile.in.pef-decoder	2006-03-13 11:24:00.000000000 +0100
++++ cxmon-3.1/src/Makefile.in	2006-03-13 13:53:20.000000000 +0100
+@@ -51,7 +51,7 @@ binPROGRAMS_INSTALL = $(INSTALL_PROGRAM)
+ PROGRAMS = $(bin_PROGRAMS)
+ am_cxmon_OBJECTS = main.$(OBJEXT) mon.$(OBJEXT) mon_6502.$(OBJEXT) \
+ 	mon_z80.$(OBJEXT) mon_cmd.$(OBJEXT) mon_disass.$(OBJEXT) \
+-	mon_lowmem.$(OBJEXT) mon_ppc.$(OBJEXT)
++	mon_lowmem.$(OBJEXT) mon_ppc.$(OBJEXT) mon_pef.$(OBJEXT)
+ cxmon_OBJECTS = $(am_cxmon_OBJECTS)
+ cxmon_DEPENDENCIES = disass/libdisass.a
+ DEFAULT_INCLUDES = -I. -I$(srcdir) -I$(top_builddir)
+@@ -161,7 +161,7 @@ target_alias = @target_alias@
+ SUBDIRS = disass
+ cxmon_SOURCES = main.cpp mon.cpp mon.h mon_6502.cpp mon_z80.cpp mon_atraps.h \
+   mon_cmd.cpp mon_cmd.h mon_disass.cpp mon_disass.h mon_lowmem.cpp mon_lowmem.h \
+-  mon_ppc.cpp sysdeps.h
++  mon_ppc.cpp mon_pef.cpp sysdeps.h
+ 
+ cxmon_LDADD = disass/libdisass.a
+ all: all-recursive
+@@ -237,6 +237,7 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mon_disass.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mon_lowmem.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mon_ppc.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mon_pef.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mon_z80.Po@am__quote@
+ 
+ .cpp.o:
+--- cxmon-3.1/src/mon.cpp.pef-decoder	2004-04-20 21:31:01.000000000 +0200
++++ cxmon-3.1/src/mon.cpp	2006-03-13 03:05:23.000000000 +0100
+@@ -1058,6 +1058,7 @@ void mon_init()
+ 	mon_add_command("yb", apply_byte, NULL);
+ 	mon_add_command("yh", apply_half, NULL);
+ 	mon_add_command("yw", apply_word, NULL);
++	mon_add_command("pef", dump_pef,				"pef start                Dump PEF image\n");
+ 	mon_add_command("t", transfer,					"t start end dest         Transfer memory\n");
+ 	mon_add_command("c", compare,					"c start end dest         Compare memory\n");
+ 	mon_add_command("h", help_or_hunt,				"h start end string       Search for byte string\n");
+--- cxmon-3.1/src/mon_cmd.h.pef-decoder	2004-04-20 21:31:01.000000000 +0200
++++ cxmon-3.1/src/mon_cmd.h	2006-03-13 03:05:23.000000000 +0100
+@@ -42,5 +42,6 @@ extern void compare(void);
+ extern void hunt(void);
+ extern void load_data(void);
+ extern void save_data(void);
++extern void dump_pef(void);
+ 
+ #endif
+--- cxmon-3.1/src/mon_pef.cpp.pef-decoder	2006-03-13 03:05:23.000000000 +0100
++++ cxmon-3.1/src/mon_pef.cpp	2006-03-13 11:13:49.000000000 +0100
+@@ -0,0 +1,1157 @@
++/*
++ *  mon_pef.cpp - PEF decoder
++ *
++ *  cxmon (C) 1997-2006 Christian Bauer, Marc Hellwig
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++/*
++ *  SEE ALSO
++ *    Inside Macintosh: Mac OS Runtime Architectures, chapter 8 "PEF Structure"
++ *    Binutils for parsing Stubs and Traceback tables
++ */
++
++#ifndef TEST
++#include "sysdeps.h"
++#endif
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdarg.h>
++#include <assert.h>
++#include <netinet/in.h>
++
++#include <new>
++#include <string>
++#include <vector>
++#include <algorithm>
++
++#ifndef TEST
++#include "mon.h"
++#include "mon_disass.h"
++#endif
++
++#define DEBUG 1
++
++#if DEBUG
++#define D(x) x
++#else
++#define D(x)
++#endif
++
++#ifndef bug
++#define bug printf
++#endif
++
++#ifndef NO_STD_NAMESPACE
++using std::string;
++using std::vector;
++#endif
++
++
++// Data types (only valid for ILP32, LP64)
++#ifdef TEST
++typedef signed char		int8;
++typedef signed short	int16;
++typedef signed int		int32;
++typedef signed long		intptr;
++typedef unsigned char	uint8;
++typedef unsigned short	uint16;
++typedef unsigned int	uint32;
++typedef unsigned long	uintptr;
++#endif
++
++
++/*
++ *  Structures
++ */
++
++#if __MWERKS__ && __POWERPC__
++#define PRAGMA_ALIGN_SUPPORTED 1
++#define PACKED__
++#elif defined __GNUC__
++#define PACKED__ __attribute__ ((packed))
++#elif defined __sgi
++#define PRAGMA_PACK_SUPPORTED 1
++#define PACKED__
++#else
++#error "Packed attribute or pragma shall be supported"
++#endif
++
++// Container header
++struct PEFContainerHeader {
++	char tag1[4];
++	char tag2[4];
++	char architecture[4];
++	uint32 formatVersion;
++	uint32 dateTimeStamp;
++	uint32 oldDefVersion;
++	uint32 oldImpVersion;
++	uint32 currentVersion;
++	uint16 sectionCount;
++	uint16 instSectionCount;
++	uint32 reservedA;
++};
++
++// Section header
++struct PEFSectionHeader {
++	int32 nameOffset;
++	uint32 defaultAddress;
++	uint32 totalSize;
++	uint32 unpackedSize;
++	uint32 packedSize;
++	uint32 containerOffset;
++	uint8 sectionKind;
++	uint8 shareKind;
++	uint8 alignment;
++	uint8 reserved;
++};
++
++// Loader header
++struct PEFLoaderInfoHeader {
++	int32 mainSection;
++	uint32 mainOffset;
++	int32 initSection;
++	uint32 initOffset;
++	int32 termSection;
++	uint32 termOffset;
++	uint32 importedLibraryCount;
++	uint32 totalImportedSymbolCount;
++	uint32 relocSectionCount;
++	uint32 relocInstrOffset;
++	uint32 loaderStringsOffset;
++	uint32 exportHashOffset;
++	uint32 exportHashTablePower;
++	uint32 exportedSymbolCount;
++};
++
++// Imported library description
++struct PEFImportedLibrary {
++	uint32 nameOffset;
++	uint32 oldImpVersion;
++	uint32 currentVersion;
++	uint32 importedSymbolCount;
++	uint32 firstImportedSymbol;
++	uint8 options;
++	uint8 reservedA;
++	uint16 reservedB;
++};
++
++#ifdef PRAGMA_ALIGN_SUPPORTED
++#pragma options align=mac68k
++#endif
++
++#ifdef PRAGMA_PACK_SUPPORTED
++#pragma pack(1)
++#endif
++
++// Relocation headers table
++struct PEFLoaderRelocationHeader {
++	uint16 sectionIndex;
++	uint16 reservedA;
++	uint32 relocCount;
++	uint32 firstRelocOffset;
++} PACKED__;
++
++// Loader import symbol table entry
++struct PEFImportedSymbol {
++	uint32 flags		: 4;
++	uint32 symbolClass	: 4;
++	uint32 nameOffset	: 24;
++	uint32 symbolValue;
++} PACKED__;
++
++// Loader export hash slot table entry
++struct PEFExportHash {
++	uint32 chainCount	: 14;
++	uint32 tableIndex	: 18;
++} PACKED__;
++
++// Loader export hash chain table entry
++struct PEFExportKey {
++	uint32 length		: 16;
++	uint32 encodedName	: 16;
++} PACKED__;
++
++// Loader export symbol table entry
++struct PEFExportedSymbol {
++	uint32 classAndName;
++	uint32 symbolValue;
++	int16 sectionIndex;
++} PACKED__;
++
++// Traceback table entry
++struct PEFTracebackTable {
++	uint8 version;
++	uint8 lang;
++	uint8 flags1;
++	uint8 flags2;
++	uint8 flags3;
++	uint8 flags4;
++	uint8 fixedparams;
++	uint8 flags5;
++} PACKED__;
++
++#ifdef PRAGMA_PACK_SUPPORTED
++#pragma pack(0)
++#endif
++
++#ifdef PRAGMA_ALIGN_SUPPORTED
++#pragma options align=reset
++#endif
++
++
++/*
++ *  Constants
++ */
++
++// Section kind
++enum {
++	kPEFSectionCode				= 0,
++	kPEFSectionUnpackedData		= 1,
++	kPEFSectionPackedData		= 2,
++	kPEFSectionConstant			= 3,
++	kPEFSectionLoader			= 4,
++	kPEFSectionDebug			= 5,
++	kPEFSectionExecutableData	= 6,
++	kPEFSectionException		= 7,
++	kPEFSectionTraceback		= 8,
++};
++
++// Sharing options
++enum {
++	kPEFShareProcess			= 1,
++	kPEFShareGlobal				= 4,
++	kPEFShareProtected			= 5,
++};
++
++// Symbol classes
++enum {
++	kPEFCodeSymbol				= 0,
++	kPEFDataSymbol				= 1,
++	kPEFTVectSymbol				= 2,
++	kPEFTOCSymbol				= 3,
++	kPEFGlueSymbol				= 4,
++};
++
++// Relocation opcodes
++enum {
++	kPEFRelocBySectDWithSkip	= 0x00, // 00xxxxx
++	kPEFRelocBySectC			= 0x20, // 0100000
++	kPEFRelocBySectD			= 0x21, // 0100001
++	kPEFRelocTVector12			= 0x22, // 0100010
++	kPEFRelocTVector8			= 0x23, // 0100011
++	kPEFRelocVTable8			= 0x24, // 0100100
++	kPEFRelocImportRun			= 0x25, // 0100101
++	kPEFRelocSmByImport			= 0x30, // 0110000
++	kPEFRelocSmSetSectC			= 0x31, // 0110001
++	kPEFRelocSmSetSectD			= 0x32, // 0110010
++	kPEFRelocSmBySection		= 0x33, // 0110011
++	kPEFRelocIncrPosition		= 0x40, // 1000xxx
++	kPEFRelocSmRepeat			= 0x48, // 1001xxx
++	kPEFRelocSetPosition		= 0x50, // 101000x
++	kPEFRelocLgByImport			= 0x52, // 101001x
++	kPEFRelocLgRepeat			= 0x58, // 101100x
++	kPEFRelocLgSetOrBySection	= 0x5A, // 101101x
++};
++
++// Traceback flags
++enum {
++	TB_C						= 0,	// C
++	TB_CPLUSPLUS				= 9,	// C++
++	TB_HAS_TBOFF				= 0x20,	// tb_offset set (extension field)
++	TB_HAS_CTL					= 0x08,	// Has controlled automatic storage
++	TB_INT_HNDL					= 0x80,	// Routine is an interrupt handler
++	TB_NAME_PRESENT				= 0x40,	// Name set (extension field)
++	TB_USES_ALLOCA				= 0x20,	// Uses alloca() to allocate storage
++	TB_HAS_VEC_INFO				= 0x80,	// Routine uses vectors
++	TB_FLOATPARAMS				= 0xfe, // Number of floating point parameters
++};
++
++
++/*
++ *  Memory access
++ */
++
++#if defined TEST
++static inline uint32 pef_get8(uintptr adr)  { return *(uint8 *)adr; }
++static inline uint32 pef_get16(uintptr adr) { return ntohs(*(uint16 *)adr); }
++static inline uint32 pef_get32(uintptr adr) { return ntohl(*(uint32 *)adr); }
++#else
++static inline uint32 pef_get8(uintptr adr)  { return mon_read_byte(adr); }
++static inline uint32 pef_get16(uintptr adr) { return mon_read_half(adr); }
++static inline uint32 pef_get32(uintptr adr) { return mon_read_word(adr); }
++#endif
++
++static string pef_get_string(uintptr adr)
++{
++	string str;
++	char ch;
++	while ((ch = pef_get8(adr)) != 0) {
++		str += ch;
++		adr ++;
++	}
++	return str;
++}
++
++static void pef_memcpy(uint8 *dest, uintptr src, uint32 length)
++{
++	while (length-- > 0)
++		*dest++ = pef_get8(src++);
++}
++
++
++/*
++ *  Monitor output
++ */
++
++#ifdef TEST
++#define monout stdout
++#endif
++
++static void pef_printf(const char *format, ...)
++{
++	va_list args;
++	va_start(args, format);
++	vfprintf(monout, format, args);
++	va_end(args);
++}
++
++
++/*
++ *  Decoded PEF section
++ */
++
++struct PEFSection : PEFSectionHeader {
++	string name;
++	union {
++		uintptr data;
++		uint8 *pdata;
++	};
++	bool is_packed_data;
++
++	PEFSection();
++	~PEFSection();
++	uint16 get16(uintptr adr) const;
++	uint32 get32(uintptr adr) const;
++};
++
++PEFSection::PEFSection()
++	: data(0), is_packed_data(false)
++{
++}
++
++PEFSection::~PEFSection()
++{
++	if (is_packed_data)
++		delete pdata;
++}
++
++inline uint16 PEFSection::get16(uintptr adr) const
++{
++	uint16 value;
++	if (is_packed_data)
++		value = ntohs(*(uint16 *)(pdata + adr));
++	else
++		value = pef_get16(data + adr);
++	return value;
++}
++
++inline uint32 PEFSection::get32(uintptr adr) const
++{
++	uint32 value;
++	if (is_packed_data)
++		value = ntohl(*(uint32 *)(pdata + adr));
++	else
++		value = pef_get32(data + adr);
++	return value;
++}
++
++
++/*
++ *  Decoded PEF loader section
++ */
++
++struct PEFLoader {
++	PEFLoaderInfoHeader loaderHeader;
++	PEFImportedLibrary *importedLibraryTable;
++	PEFImportedSymbol *importedSymbolTable;
++	PEFLoaderRelocationHeader *relocationHeadersTable;
++	uintptr loaderStringTable;
++	PEFExportHash *exportHashTable;
++	PEFExportKey *exportKeyTable;
++	PEFExportedSymbol *exportedSymbolTable;
++
++	PEFLoader();
++	~PEFLoader();
++};
++
++PEFLoader::PEFLoader()
++	: importedLibraryTable(NULL),
++	  importedSymbolTable(NULL),
++	  relocationHeadersTable(NULL),
++	  loaderStringTable(0),
++	  exportHashTable(NULL),
++	  exportKeyTable(NULL),
++	  exportedSymbolTable(NULL)
++{
++}
++
++PEFLoader::~PEFLoader()
++{
++	if (importedLibraryTable)
++		delete[] importedLibraryTable;
++	if (importedSymbolTable)
++		delete[] importedSymbolTable;
++	if (relocationHeadersTable)
++		delete[] relocationHeadersTable;
++	if (exportHashTable)
++		delete[] exportHashTable;
++	if (exportKeyTable)
++		delete[] exportKeyTable;
++	if (exportedSymbolTable)
++		delete[] exportedSymbolTable;
++}
++
++
++/*
++ *  Decoded PEF symbol
++ */
++
++struct PEFSymbol {
++	uint32 value;
++	uint32 name;
++	uint16 namelen;
++	uint16 namesec;
++	uint16 shndx;
++	uint8  type;
++	uint8  _pad;
++};
++
++inline bool operator< (PEFSymbol const &a, PEFSymbol const &b)
++{
++	return a.shndx < b.shndx || (a.shndx == b.shndx && a.value < b.value);
++}
++
++typedef vector<PEFSymbol> PEFSymbolTable;
++
++
++/*
++ *  Decoded PEF object
++ */
++
++struct PEFObject {
++	PEFContainerHeader hdr;
++	PEFSection *shdr;
++	PEFLoader loader;
++	uintptr nameTable;
++	uintptr data;
++	int code_shndx;
++	int loader_shndx;
++	PEFSymbolTable symtab;
++
++	PEFObject();
++	~PEFObject();
++	bool decode(uintptr adr);
++	void dump(bool relative = false);
++	bool valid_section(int shndx);
++};
++
++PEFObject::PEFObject()
++	: shdr(NULL), nameTable(0), data(0), code_shndx(-1), loader_shndx(-1)
++{
++}
++
++PEFObject::~PEFObject()
++{
++	if (shdr)
++		delete[] shdr;
++}
++
++inline bool PEFObject::valid_section(int shndx)
++{
++	return shndx >= 0 && shndx < hdr.sectionCount;
++}
++
++
++/*
++ *  Helpers to read PEF data structures
++ */
++
++#define FIELD_OFFSET(NAME, FIELD)		((uint8 *)&(NAME)->FIELD - (uint8 *)(NAME))
++#define GET_FIELD(WIDTH, NAME, FIELD)	(NAME)->FIELD = pef_get##WIDTH(adr + FIELD_OFFSET(NAME, FIELD))
++#define GET_FIELD_ARRAY(N, NAME, FIELD)	pef_memcpy((uint8 *)&(NAME)->FIELD[0], adr + FIELD_OFFSET(NAME, FIELD), (N))
++
++static void pef_read_container_header(PEFContainerHeader *h, uintptr adr)
++{
++	assert(sizeof(PEFContainerHeader) == 40);
++
++	GET_FIELD_ARRAY(4, h, tag1);
++	GET_FIELD_ARRAY(4, h, tag2);
++	GET_FIELD_ARRAY(4, h, architecture);
++	GET_FIELD(32, h, formatVersion);
++	GET_FIELD(32, h, dateTimeStamp);
++	GET_FIELD(32, h, oldDefVersion);
++	GET_FIELD(32, h, oldImpVersion);
++	GET_FIELD(32, h, currentVersion);
++	GET_FIELD(16, h, sectionCount);
++	GET_FIELD(16, h, instSectionCount);
++}
++
++static void pef_read_section_header(PEFSectionHeader *h, uintptr adr)
++{
++	assert(sizeof(PEFSectionHeader) == 28);
++
++	GET_FIELD(32, h, nameOffset);
++	GET_FIELD(32, h, defaultAddress);
++	GET_FIELD(32, h, totalSize);
++	GET_FIELD(32, h, unpackedSize);
++	GET_FIELD(32, h, packedSize);
++	GET_FIELD(32, h, containerOffset);
++	GET_FIELD( 8, h, sectionKind);
++	GET_FIELD( 8, h, shareKind);
++	GET_FIELD( 8, h, alignment);
++}
++
++static void pef_read_loader_info_header(PEFLoaderInfoHeader *h, uintptr adr)
++{
++	assert(sizeof(PEFLoaderInfoHeader) == 56);
++
++	GET_FIELD(32, h, mainSection);
++	GET_FIELD(32, h, mainOffset);
++	GET_FIELD(32, h, initSection);
++	GET_FIELD(32, h, initOffset);
++	GET_FIELD(32, h, termSection);
++	GET_FIELD(32, h, termOffset);
++	GET_FIELD(32, h, importedLibraryCount);
++	GET_FIELD(32, h, totalImportedSymbolCount);
++	GET_FIELD(32, h, relocSectionCount);
++	GET_FIELD(32, h, relocInstrOffset);
++	GET_FIELD(32, h, loaderStringsOffset);
++	GET_FIELD(32, h, exportHashOffset);
++	GET_FIELD(32, h, exportHashTablePower);
++	GET_FIELD(32, h, exportedSymbolCount);
++}
++
++static void pef_read_imported_library(PEFImportedLibrary *l, uintptr adr)
++{
++	assert(sizeof(PEFImportedLibrary) == 24);
++
++	GET_FIELD(32, l, nameOffset);
++	GET_FIELD(32, l, oldImpVersion);
++	GET_FIELD(32, l, currentVersion);
++	GET_FIELD(32, l, importedSymbolCount);
++	GET_FIELD(32, l, firstImportedSymbol);
++	GET_FIELD( 8, l, options);
++}
++
++static void pef_read_exported_symbol(PEFExportedSymbol *s, uintptr adr)
++{
++	assert(sizeof(PEFExportedSymbol) == 10);
++
++	GET_FIELD(32, s, classAndName);
++	GET_FIELD(32, s, symbolValue);
++	GET_FIELD(16, s, sectionIndex);
++}
++
++static void pef_read_traceback_table(PEFTracebackTable *tb, uintptr adr)
++{
++	assert(sizeof(PEFTracebackTable) == 8);
++
++	GET_FIELD(8, tb, version);
++	GET_FIELD(8, tb, lang);
++	GET_FIELD(8, tb, flags1);
++	GET_FIELD(8, tb, flags2);
++	GET_FIELD(8, tb, flags3);
++	GET_FIELD(8, tb, flags4);
++	GET_FIELD(8, tb, fixedparams);
++	GET_FIELD(8, tb, flags5);
++}
++
++#undef GET_FIELD_ARRAY
++#undef GET_FIELD
++#undef FIELD_OFFSET
++
++static string pef_sym_name(PEFObject *pef, PEFSymbol const & sym)
++{
++	string name;
++	name.reserve(sym.namelen + 1);
++	if (sym.namesec == pef->loader_shndx)
++		pef_memcpy((uint8 *)&name[0], pef->loader.loaderStringTable + sym.name, sym.namelen);
++	else {
++		PEFSection const & sec = pef->shdr[sym.namesec];
++		if (sec.is_packed_data)
++			memcpy((uint8 *)&name[0], sec.pdata, sym.namelen);
++		else
++			pef_memcpy((uint8 *)&name[0], sec.data + sym.name, sym.namelen);
++	}
++	name[sym.namelen] = '\0'; // XXX add continuation '...' for too long symbol names
++	return name;
++}
++
++static const char *pef_sym_class_name(int type)
++{
++	switch (type) {
++	case kPEFCodeSymbol:	return "CODE";	break;
++	case kPEFDataSymbol:	return "DATA";	break;
++	case kPEFTVectSymbol:	return "TVECT";	break;
++	case kPEFTOCSymbol:		return "TOC";	break;
++	case kPEFGlueSymbol:	return "GLUE";	break;
++	default:				return "";		break;
++	}
++}
++
++static uint32 pef_get_packed_data_count(uintptr & s)
++{
++	uint8 inst;
++	uint32 count = 0;
++
++	do {
++		inst = pef_get8(s++);
++		count = (count << 7) | (inst & 0x7f);
++	} while (inst & 0x80);
++
++	return count;
++}
++
++static bool pef_load_packed_data_section(PEFSection *sec)
++{
++	sec->is_packed_data = true;
++	uintptr s = sec->data;
++	const uintptr e = sec->data + sec->packedSize;
++	uint8 *d = sec->pdata = new uint8[sec->unpackedSize];
++
++	while (s < e) {
++		uint8 inst = pef_get8(s++);
++		uint32 opcode = (inst >> 5) & 0x07;
++		uint32 count = inst & 0x1f;
++
++		if (count == 0)
++			count = pef_get_packed_data_count(s);
++
++		switch (opcode) {
++		case 0:		// Zero
++			memset(d, 0, count);
++			d += count;
++			break;
++		case 1:		// blockCopy
++			pef_memcpy(d, s, count);
++			s += count;
++			d += count;
++			break;
++		case 2: {	// repeatedBlock
++			const int repeatCount = 1 + pef_get_packed_data_count(s);
++			for (int i = 0; i < repeatCount; i++) {
++				pef_memcpy(d, s, count);
++				d += count;
++			}
++			s += count;
++			break;
++		}
++		case 3: {	// interleaveRepeatBlockWithBlockCopy
++			const int customSize = pef_get_packed_data_count(s);
++			const int repeatCount = pef_get_packed_data_count(s);
++			const uintptr c = s; s += count;
++			for (int i = 0; i < repeatCount; i++) {
++				pef_memcpy(d, c, count);
++				d += count;
++				pef_memcpy(d, s, customSize);
++				s += customSize;
++				d += customSize;
++			}
++			pef_memcpy(d, c, count);
++			d += count;
++			break;
++		}
++		case 4: {	// interleaveRepeatBlockWithZero
++			const int customSize = pef_get_packed_data_count(s);
++			const int repeatCount = pef_get_packed_data_count(s);
++			for (int i = 0; i < repeatCount; i++) {
++				memset(d, 0, count);
++				d += count;
++				pef_memcpy(d, s, customSize);
++				s += customSize;
++				d += customSize;
++			}
++			memset(d, 0, count);
++			d += count;
++			break;
++		}
++		default:
++			D(bug("ERROR: unknown packed-data opcode %d\n", opcode));
++			return false;
++		}
++	}
++
++	if (s != e) {
++		D(bug("ERROR: packed-data input overflow\n"));
++		return false;
++	}
++
++	if ((d - sec->pdata) != sec->unpackedSize) {
++		D(bug("ERROR: packed-data output overflow\n"));
++		return false;
++	}
++
++	return true;
++}
++
++static bool pef_load_loader_section(PEFLoader *loader, PEFSection *loader_sec)
++{
++	// Get loader header
++	uintptr adr = loader_sec->data;
++	pef_read_loader_info_header(&loader->loaderHeader, adr);
++	adr += sizeof(PEFLoaderInfoHeader);
++
++	// Get imported symbols
++	const int n_imported_libraries = loader->loaderHeader.importedLibraryCount;
++	loader->importedLibraryTable = new PEFImportedLibrary[n_imported_libraries];
++	for (int i = 0; i < n_imported_libraries; i++, adr += sizeof(PEFImportedLibrary))
++		pef_read_imported_library(&loader->importedLibraryTable[i], adr);
++
++	const int n_imported_symbols = loader->loaderHeader.totalImportedSymbolCount;
++	PEFImportedSymbol *import_table = new PEFImportedSymbol[n_imported_symbols];
++	for (int i = 0; i < n_imported_symbols; i++, adr += 4) {
++		uint32 value = pef_get32(adr);
++		import_table[i].flags = (value >> 28) & 0xf;
++		import_table[i].symbolClass = (value >> 24) & 0xf;
++		import_table[i].nameOffset = value & 0x00ffffff;
++		import_table[i].symbolValue = 0xffffffff;
++	}
++	loader->importedSymbolTable = import_table;
++
++	// Get relocations (TODO)
++
++	// Get loader string table
++	adr = loader_sec->data + loader->loaderHeader.loaderStringsOffset;
++	loader->loaderStringTable = adr;
++
++	// Get export hash table
++	adr = loader_sec->data + loader->loaderHeader.exportHashOffset;
++	const int hash_table_size = 1 << loader->loaderHeader.exportHashTablePower;
++	PEFExportHash *hash_table = new PEFExportHash[hash_table_size];
++	for (int i = 0; i < hash_table_size; i++, adr += 4) {
++		uint32 value = pef_get32(adr);
++		hash_table[i].chainCount = (value >> 18) & 0x3fff;
++		hash_table[i].tableIndex = value & 0x3ffff;
++	}
++	loader->exportHashTable = hash_table;
++
++	// Get export key table
++	const int key_table_size = loader->loaderHeader.exportedSymbolCount;
++	PEFExportKey *key_table = new PEFExportKey[key_table_size];
++	for (int i = 0; i < key_table_size; i++, adr += 4) {
++		uint32 value = pef_get32(adr);
++		key_table[i].length = value >> 16;
++		key_table[i].encodedName = value & 0xffff;
++	}
++	loader->exportKeyTable = key_table;
++
++	// Get exported symbol table
++	const int symbol_table_size = loader->loaderHeader.exportedSymbolCount;
++	PEFExportedSymbol *symbol_table = new PEFExportedSymbol[symbol_table_size];
++	for (int i = 0; i < symbol_table_size; i++, adr += sizeof(PEFExportedSymbol))
++		pef_read_exported_symbol(&symbol_table[i], adr);
++	loader->exportedSymbolTable = symbol_table;
++
++	return true;
++}
++
++bool PEFObject::decode(uintptr adr)
++{
++	// Get PEF container
++	data = adr;
++	pef_read_container_header(&hdr, data);
++
++	// Check PEF identification
++	if (strncmp(hdr.tag1, "Joy!", 4) != 0)
++		return false;
++	if (strncmp(hdr.tag2, "peff", 4) != 0)
++		return false;
++
++	// Record section name table
++	nameTable = data + sizeof(PEFContainerHeader) + hdr.sectionCount * sizeof(PEFSectionHeader);
++
++	// Read section headers
++	shdr = new PEFSection[hdr.sectionCount];
++	for (int i = 0; i < hdr.sectionCount; i++) {
++		PEFSection * const sec = &shdr[i];
++		pef_read_section_header(sec, data + sizeof(PEFContainerHeader) + i * sizeof(PEFSectionHeader));
++		if (sec->nameOffset != -1)
++			sec->name = pef_get_string(nameTable + sec->nameOffset);
++		else {
++			switch (sec->sectionKind) {
++			case kPEFSectionCode:				sec->name = "code";				break;
++			case kPEFSectionUnpackedData:		sec->name = "unpacked-data";	break;
++			case kPEFSectionPackedData:			sec->name = "packed-data";		break;
++			case kPEFSectionConstant:			sec->name = "constant";			break;
++			case kPEFSectionLoader:				sec->name = "loader";			break;
++			case kPEFSectionDebug:				sec->name = "debug";			break;
++			case kPEFSectionExecutableData:		sec->name = "executable-data";	break;
++			case kPEFSectionException:			sec->name = "exception";		break;
++			case kPEFSectionTraceback:			sec->name = "traceback";		break;
++			default:							sec->name = "";					break;
++			}
++		}
++		switch (sec->sectionKind) {
++		case kPEFSectionCode:	code_shndx = i;		break;
++		case kPEFSectionLoader:	loader_shndx = i;	break;
++		}
++		sec->data = data + sec->containerOffset;
++
++		// Expand Pattern-Initialized Data
++		if (sec->sectionKind == kPEFSectionPackedData) {
++			if (!pef_load_packed_data_section(sec))
++				return false;
++		}
++	}
++
++	// Read loader header
++	if (loader_shndx != -1) {
++		if (!pef_load_loader_section(&loader, &shdr[loader_shndx]))
++			return false;
++
++		// Adjust main offset
++		if (valid_section(loader.loaderHeader.mainSection)) {
++			const PEFSection *sec = &shdr[loader.loaderHeader.mainSection];
++			if (sec->is_packed_data) { // TVECT
++				loader.loaderHeader.mainOffset = sec->get32(loader.loaderHeader.mainOffset);
++				loader.loaderHeader.mainSection = code_shndx;
++				sec = &shdr[code_shndx];
++			}
++			loader.loaderHeader.mainOffset += sec->containerOffset;
++		}
++
++		// Adjust initialization function offset
++		if (valid_section(loader.loaderHeader.initSection)) {
++			const PEFSection *sec = &shdr[loader.loaderHeader.initSection];
++			if (sec->is_packed_data) { // TVECT
++				loader.loaderHeader.initOffset = sec->get32(loader.loaderHeader.initOffset);
++				loader.loaderHeader.initSection = code_shndx;
++				sec = &shdr[code_shndx];
++			}
++			loader.loaderHeader.initOffset += sec->containerOffset;
++		}
++
++		// Adjust termination function offset
++		if (valid_section(loader.loaderHeader.termSection)) {
++			const PEFSection *sec = &shdr[loader.loaderHeader.termSection];
++			if (sec->is_packed_data) { // TVECT
++				loader.loaderHeader.termOffset = sec->get32(loader.loaderHeader.termOffset);
++				loader.loaderHeader.termSection = code_shndx;
++				sec = &shdr[code_shndx];
++			}
++			loader.loaderHeader.termOffset += sec->containerOffset;
++		}
++
++		// Decode stubs for imported functions
++		if (code_shndx != -1) {
++			const PEFSection * const sec = &shdr[code_shndx];
++			const uintptr code_end = sec->data + sec->unpackedSize;
++			for (uintptr code = sec->data; code < code_end; code += 4) {
++				uint32 inst = pef_get32(code);
++				if ((inst & 0xffff0000) == 0x81820000) {		// lwz	 r12,$0000(r2)
++					if (code + 24 > code_end)
++						break;
++					if (pef_get32(code + 4*1) != 0x90410014)	// stw   r2,$0014(r1)
++						continue;
++					if (pef_get32(code + 4*2) != 0x800c0000)	// lwz   r0,$0000(r12)
++						continue;
++					if (pef_get32(code + 4*3) != 0x804c0004)	// lwz   r2,$0004(r12)
++						continue;
++					if (pef_get32(code + 4*4) != 0x7c0903a6)	// mtctr r0
++						continue;
++					if (pef_get32(code + 4*5) != 0x4e800420)	// bctr
++						continue;
++					uint32 index = (inst & 0x0000ffff) / 4;
++					if (index < loader.loaderHeader.totalImportedSymbolCount) {
++						PEFImportedSymbol & sym = loader.importedSymbolTable[index];
++						sym.symbolClass = kPEFCodeSymbol;
++						sym.symbolValue = sec->containerOffset + code - sec->data;
++					}
++					code += 20;
++				}
++			}
++		}
++
++		// Try to build symbol table from traceback tables first
++		symtab.clear();
++		if (code_shndx != -1) {
++			const PEFSection * const sec = &shdr[code_shndx];
++			const uintptr code = sec->data;
++			for (uint32 pos = 0; pos < sec->unpackedSize; pos += 4) {
++				if (pef_get8(code + pos + 0) != 0)
++					continue;
++				if (pef_get8(code + pos + 1) != 0)
++					continue;
++				if (pef_get8(code + pos + 2) != 0)
++					continue;
++				if (pef_get8(code + pos + 3) != 0)
++					continue;
++				if (4 + pos + 8 > sec->unpackedSize)
++					break;
++				struct PEFTracebackTable tb;
++				pef_read_traceback_table(&tb, code + 4 + pos);
++				if (tb.lang != TB_C && tb.lang != TB_CPLUSPLUS)
++					continue;
++				if ((tb.flags2 & TB_NAME_PRESENT) == 0)
++					continue;
++				if ((tb.flags1 & TB_HAS_TBOFF) == 0)
++					continue;
++				int offset = 8;
++				if ((tb.flags5 & TB_FLOATPARAMS) || tb.fixedparams)
++					offset += 4;
++				PEFSymbol sym;
++				if (tb.flags1 & TB_HAS_TBOFF) {
++					if (4 + pos + offset + 4 > sec->unpackedSize)
++						break;
++					sym.value = sec->containerOffset + pos - pef_get32(code + 4 + pos + offset);
++					offset += 4;
++				}
++				if (tb.flags2 & TB_INT_HNDL)
++					offset += 4;
++				if (tb.flags1 & TB_HAS_CTL) {
++					if (4 + pos + offset + 4 > sec->unpackedSize)
++						break;
++					const int n_ctl_info = pef_get32(code + 4 + pos + offset);
++					offset += 4;
++					if (n_ctl_info > 1024)
++						continue;
++					offset += n_ctl_info * 4;
++				}
++				if (tb.flags2 & TB_NAME_PRESENT) {
++					if (4 + pos + offset + 2 > sec->unpackedSize)
++						break;
++					uint32 namelen = pef_get16(code + 4 + pos + offset);
++					offset += 2;
++					uint32 nameoff = 4 + pos + offset;
++					offset += namelen;
++					if (nameoff + namelen > sec->unpackedSize)
++						break;
++					if (pef_get8(code + nameoff) == '.') // strip leading '.'
++						nameoff++, namelen--;
++					sym.name = nameoff;
++					sym.namelen = namelen;
++				}
++				if (tb.flags2 & TB_USES_ALLOCA)
++					offset += 4;
++				if (tb.flags4 & TB_HAS_VEC_INFO)
++					offset += 4;
++				offset = (offset + 3) & -4;
++
++				sym.namesec = code_shndx;
++				sym.type  = kPEFCodeSymbol;
++				sym.shndx = code_shndx;
++				symtab.push_back(sym);
++
++				pos += offset;
++			}
++		}
++
++		// Expand table with export symbols
++		const PEFExportKey * const key_table = loader.exportKeyTable;
++		const PEFExportedSymbol * const symbol_table = loader.exportedSymbolTable;
++		for (unsigned int i = 0; i < loader.loaderHeader.exportedSymbolCount; i++) {
++			PEFSymbol sym;
++			sym.value = symbol_table[i].symbolValue;
++			sym.name  = symbol_table[i].classAndName & 0xffffff;
++			sym.namelen = key_table[i].length;
++			sym.namesec = loader_shndx;
++			sym.type  = symbol_table[i].classAndName >> 24;
++			sym.shndx = symbol_table[i].sectionIndex;
++			symtab.push_back(sym);
++
++			// Try to match a function from its TVECT
++			if (sym.type == kPEFTVectSymbol && valid_section(code_shndx) && valid_section(sym.shndx)) {
++				const PEFSection * const sec = &shdr[sym.shndx];
++				if (sym.value + 4 <= sec->unpackedSize) {
++					sym.value = shdr[code_shndx].containerOffset + sec->get32(sym.value);
++					sym.type  = kPEFCodeSymbol;
++					sym.shndx = code_shndx;
++					symtab.push_back(sym);
++				}
++			}
++		}
++
++		// Sort symbol table by section index and address in that section
++		std::sort(symtab.begin(), symtab.end());
++	}
++	
++	return true;
++}
++
++static PEFObject *PEF_Decode(uintptr adr)
++{
++	PEFObject *p = new(std::nothrow) PEFObject;
++	if (p == NULL)
++		return NULL;
++
++	if (!p->decode(adr)) {
++		delete p;
++		return NULL;
++	}
++
++	return p;
++}
++
++void PEFObject::dump(bool relative)
++{
++	// XXX fix this mess
++	const uintptr base = relative ? 0 : data;
++
++	pef_printf("PEF Container Header:\n");
++	pef_printf("  %-32s: '%c%c%c%c'\n", "Architecture", hdr.architecture[0], hdr.architecture[1], hdr.architecture[2], hdr.architecture[3]);
++	pef_printf("  %-32s: %d\n", "Version", hdr.formatVersion);
++	pef_printf("  %-32s: %d\n", "Number of sections", hdr.sectionCount);
++	pef_printf("  %-32s: %d\n", "Number of instantiated sections", hdr.instSectionCount);
++	pef_printf("\n");
++
++	pef_printf("Section Headers:\n");
++	pef_printf("[Nr] %-28s %-*s %-8s %-8s %-5s %-5s\n",
++			   "Name", 2 * sizeof(uintptr), "Addr", "File off", "Size", "Share", "Algn");
++	for (int i = 0; i < hdr.sectionCount; i++) {
++		PEFSection *sec = &shdr[i];
++		const char *shareKind = "";
++		switch (sec->shareKind) {
++		case kPEFShareProcess:			shareKind = "PROC"; break;
++		case kPEFShareGlobal:			shareKind = "GLOB"; break;
++		case kPEFShareProtected:		shareKind = "PROT"; break;
++		}
++		pef_printf("[%2d] %-28s %0*lx %08x %08x %-5s 2**%d\n", i, sec->name.c_str(),
++				   2 * sizeof(uintptr), base + sec->containerOffset, sec->containerOffset,
++				   sec->packedSize, shareKind, sec->alignment);
++	}
++	pef_printf("\n");
++
++	if (loader_shndx != -1) {
++		pef_printf("Loader section [%2d]:\n", loader_shndx);
++		PEFLoaderInfoHeader *ldr = &loader.loaderHeader;
++		pef_printf("  %-32s: ", "Main symbol");
++		if (ldr->mainSection == -1)
++			pef_printf("NONE\n");
++		else
++			pef_printf("%0*lx\n", 2 * sizeof(uintptr), base + ldr->mainOffset);
++		pef_printf("  %-32s: ", "Initialization function");
++		if (ldr->initSection == -1)
++			pef_printf("NONE\n");
++		else
++			pef_printf("%0*lx\n", 2 * sizeof(uintptr), base + ldr->initOffset);
++		pef_printf("  %-32s: ", "Termination function");
++		if (ldr->termSection == -1)
++			pef_printf("NONE\n");
++		else
++			pef_printf("%0*lx\n", 2 * sizeof(uintptr), base + ldr->termOffset);
++		pef_printf("  %-32s: %d\n", "Number of imported libraries", ldr->importedLibraryCount);
++		pef_printf("  %-32s: %d\n", "Number of imported symbols", ldr->totalImportedSymbolCount);
++		pef_printf("  %-32s: %d\n", "Number of exported symbols", ldr->exportedSymbolCount);
++	}
++	pef_printf("\n");
++
++	for (unsigned int i = 0; i < loader.loaderHeader.importedLibraryCount; i++) {
++		PEFImportedLibrary *lib = &loader.importedLibraryTable[i];
++		const string & lib_name = pef_get_string(loader.loaderStringTable + lib->nameOffset);
++		pef_printf("Import symbol table for '%s' contains %d entries:\n", lib_name.c_str(), lib->importedSymbolCount);
++		pef_printf("%5s: %-*s %-5s %-5s %s\n", "Num", 2 * sizeof(uintptr), "Value", "Class", "Flags", "Name");
++		for (unsigned int j = 0; j < lib->importedSymbolCount; j++) {
++			PEFImportedSymbol const & sym = loader.importedSymbolTable[lib->firstImportedSymbol + j];
++			const string & sym_name = pef_get_string(loader.loaderStringTable + sym.nameOffset);
++			const char *sym_class = (sym.flags & 0x80) ? "WEAK" : "NONE";
++			uintptr sym_value = sym.symbolValue == 0xffffffff ? ~0UL : base + sym.symbolValue;
++			pef_printf("%5d: %0*lx %5s %5s __stub_%s\n",
++					   j, 2 * sizeof(uintptr), sym_value, pef_sym_class_name(sym.symbolClass), sym_class, sym_name.c_str());
++		}
++		pef_printf("\n");
++	}
++
++	if (symtab.size() > 0) {
++		pef_printf("Symbol table contains %d entries:\n", symtab.size());
++		pef_printf("%5s: %-8s %-5s %-5s %s\n", "Num", "Value", "Class", "Shndx", "Name");
++		for (unsigned int i = 0; i < symtab.size(); i++) {
++			PEFSymbol const & sym = symtab[i];
++			const string & sym_name = pef_sym_name(this, sym);
++			pef_printf("%5d: %0*lx %-5s %5d %s\n",
++					   i, 2 * sizeof(uintptr), base + sym.value, pef_sym_class_name(sym.type), sym.shndx, sym_name.c_str());
++		}
++		pef_printf("\n");
++	}
++}
++
++
++/*
++ *  Dump PEF object
++ *  pef start
++ */
++
++#ifndef TEST
++void dump_pef(void)
++{
++	uintptr adr;
++
++	if (!mon_expression(&adr))
++		return;
++
++	PEFObject *pef = PEF_Decode(adr);
++	if (pef) {
++		pef->dump();
++		delete pef;
++	}
++}
++#endif
++
++
++/*
++ *  Standalone test program
++ */
++
++#ifdef TEST
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <sys/mman.h>
++
++int main(int argc, char *argv[])
++{
++	for (int i = 1; i < argc; i++) {
++		const char *file_name = argv[i];
++		int fd = open(file_name, O_RDONLY);
++		if (fd < 0) {
++			perror("open");
++			continue;
++		}
++		struct stat st;
++		if (fstat(fd, &st) < 0) {
++			perror("fstat");
++			close(fd);
++			continue;
++		}
++		const uint32 page_size = getpagesize();
++		const uint32 file_size = (st.st_size + page_size - 1) & -page_size;
++		char *file_map = (char *)mmap(0, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
++		if (file_map == MAP_FAILED) {
++			perror("mmap");
++			close(fd);
++			continue;
++		}
++		PEFObject *pef = PEF_Decode((uintptr)file_map);
++		if (pef) {
++			pef->dump(true);
++			delete pef;
++		}
++		munmap(file_map, file_size);
++		close(fd);
++	}
++}
++#endif

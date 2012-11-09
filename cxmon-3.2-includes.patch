@@ -1,0 +1,11 @@
+--- cxmon-3.2/src/disass/dis-asm.h.includes	2002-09-07 14:48:15.000000000 +0200
++++ cxmon-3.2/src/disass/dis-asm.h	2009-04-03 04:29:32.000000000 +0200
+@@ -32,6 +32,8 @@
+ #endif
+ 
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #include "bfd.h"
+ 
+ typedef int (*fprintf_ftype) PARAMS((PTR, const char*, ...));
