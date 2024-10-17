@@ -8,7 +8,7 @@ Version:	%{version}
 Release:	%{release}
 License:	GPL
 Group:		Development/Other
-URL:		http://cxmon.cebix.net/
+URL:		https://cxmon.cebix.net/
 Source0:	http://cxmon.cebix.net/downloads/%name-%version.tar.gz
 Patch0:		cxmon-3.2-includes.patch
 Patch1:		cxmon-3.1-pef-decoder.patch
